@@ -3,5 +3,5 @@
 const CONFIG = {
   SUPABASE_URL: 'https://rlydgglmoxpuepupddva.supabase.co',
   SUPABASE_KEY: 'sb_publishable_TAEH6tE9p6TlBVIFCWXfLA_sLaPatZx',
-  APP_VERSION: '1.0.0',
+  APP_VERSION: '1.1.0',
 };

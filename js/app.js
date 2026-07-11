@@ -576,8 +576,25 @@ async function runOcr() {
 /* ───────── バーコード読み取り ───────── */
 
 let zxingReader = null;
+let scanActive = false;
+let scanStream = null;
+let scanLoopTimer = null;
+let nativeDetector = null;
 let lastScan = { code: null, t: 0 };
 let audioCtx = null;
+
+const SCAN_FORMATS_NATIVE = ['ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128', 'code_39', 'itf', 'qr_code'];
+
+function scanHints() {
+  const F = ZXing.BarcodeFormat;
+  const hints = new Map();
+  hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [
+    F.EAN_13, F.EAN_8, F.UPC_A, F.UPC_E, F.CODE_128, F.CODE_39, F.ITF,
+    F.RSS_14, F.RSS_EXPANDED, F.QR_CODE,
+  ]);
+  hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
+  return hints;
+}
 
 function beep() {
   try {
@@ -592,32 +609,123 @@ function beep() {
 }
 
 async function startScan() {
-  if (zxingReader) return;
+  if (scanActive) return;
+  scanActive = true;
+  const video = $('scan-video');
   const status = $('scan-status');
   status.textContent = 'カメラを起動しています…';
+  const constraints = {
+    audio: false,
+    video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } },
+  };
   try {
-    const F = ZXing.BarcodeFormat;
-    const hints = new Map();
-    hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [
-      F.EAN_13, F.EAN_8, F.UPC_A, F.UPC_E, F.CODE_128, F.CODE_39, F.ITF,
-      F.RSS_14, F.RSS_EXPANDED, F.QR_CODE,
-    ]);
-    hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
-    zxingReader = new ZXing.BrowserMultiFormatReader(hints, 250);
-    await zxingReader.decodeFromConstraints(
-      { audio: false, video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } } },
-      $('scan-video'),
-      (result) => { if (result) onBarcode(result.getText()); }
-    );
-    status.textContent = 'バーコードを枠内にかざしてください';
+    // iPhone/ブラウザ標準の読み取り機能があれば優先(高速・高精度)
+    nativeDetector = null;
+    if (window.BarcodeDetector) {
+      try { nativeDetector = new BarcodeDetector({ formats: SCAN_FORMATS_NATIVE }); } catch (_) {}
+    }
+    if (nativeDetector) {
+      scanStream = await navigator.mediaDevices.getUserMedia(constraints);
+      video.srcObject = scanStream;
+      await video.play();
+      const loop = async () => {
+        if (!scanActive) return;
+        try {
+          const codes = await nativeDetector.detect(video);
+          if (codes.length) onBarcode(codes[0].rawValue);
+        } catch (_) {}
+        scanLoopTimer = setTimeout(loop, 180);
+      };
+      loop();
+    } else {
+      zxingReader = new ZXing.BrowserMultiFormatReader(scanHints(), 180);
+      await zxingReader.decodeFromConstraints(constraints, video,
+        (result) => { if (result) onBarcode(result.getText()); });
+    }
+    status.textContent = 'バーコードを枠内にかざしてください(ピントが合うまで少し待ちます)';
   } catch (err) {
-    zxingReader = null;
-    status.textContent = 'カメラを使用できません。ブラウザの設定でカメラを許可してください。';
+    scanActive = false;
+    status.textContent = (err && err.name === 'NotAllowedError')
+      ? 'カメラが許可されていません。iPhoneの「設定 > アプリ > Safari > カメラ」で許可してください。'
+      : 'カメラを起動できません。下の「写真を撮って読み取る」をお試しください。';
   }
 }
 
 function stopScan() {
+  scanActive = false;
+  clearTimeout(scanLoopTimer);
+  if (scanStream) { scanStream.getTracks().forEach((t) => t.stop()); scanStream = null; }
+  const v = $('scan-video');
+  if (v) v.srcObject = null;
   if (zxingReader) { try { zxingReader.reset(); } catch (_) {} zxingReader = null; }
+}
+
+// 静止画(撮影した写真)からバーコードを読み取る。
+// 動画より確実にピントが合うため、読み取れない時の切り札。
+async function decodeImageFile(file) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = new Image();
+    await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = url; });
+    // 1) ブラウザ標準の読み取り
+    if (window.BarcodeDetector) {
+      try {
+        const det = new BarcodeDetector({ formats: SCAN_FORMATS_NATIVE });
+        const codes = await det.detect(img);
+        if (codes.length) return codes[0].rawValue;
+      } catch (_) {}
+    }
+    // 2) ZXingで角度を変えながら読み取り
+    const hints = scanHints();
+    const reader = new ZXing.MultiFormatReader();
+    reader.setHints(hints);
+    for (const deg of [0, 90, 270, 180]) {
+      const canvas = drawRotated(img, deg, 1600);
+      try {
+        const source = new ZXing.HTMLCanvasElementLuminanceSource(canvas);
+        const bitmap = new ZXing.BinaryBitmap(new ZXing.HybridBinarizer(source));
+        const result = reader.decode(bitmap);
+        if (result) return result.getText();
+      } catch (_) { /* この角度では見つからず */ }
+      reader.reset();
+    }
+    return null;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+function drawRotated(img, deg, maxSize) {
+  const scale = Math.min(1, maxSize / Math.max(img.naturalWidth, img.naturalHeight));
+  const w = Math.round(img.naturalWidth * scale);
+  const h = Math.round(img.naturalHeight * scale);
+  const canvas = document.createElement('canvas');
+  const swap = deg === 90 || deg === 270;
+  canvas.width = swap ? h : w;
+  canvas.height = swap ? w : h;
+  const ctx = canvas.getContext('2d');
+  ctx.translate(canvas.width / 2, canvas.height / 2);
+  ctx.rotate((deg * Math.PI) / 180);
+  ctx.drawImage(img, -w / 2, -h / 2, w, h);
+  return canvas;
+}
+
+async function onPhotoScan(e) {
+  const file = e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  $('scan-status').textContent = '写真からバーコードを探しています…';
+  toast('写真を解析中…');
+  try {
+    const code = await decodeImageFile(file);
+    if (code) { beep(); handleBarcode(code); }
+    else toast('バーコードを見つけられませんでした。バーコード全体が大きく写るように撮ってみてください', true);
+  } catch (_) {
+    toast('写真を読み込めませんでした', true);
+  }
+  if (!$('view-main').hidden && state.tab === 'scan') {
+    $('scan-status').textContent = 'バーコードを枠内にかざしてください';
+  }
 }
 
 function onBarcode(code) {
@@ -697,9 +805,12 @@ async function applyOp(op) {
     if (op.photoId) {
       const blob = await idb.get('photos', op.photoId);
       if (blob) {
+        // パスは毎回ユニークなので上書きモードは使わない
+        // (Supabaseストレージの上書きモードはRLSと相性が悪く拒否されるため)
         const path = `products/${op.photoId}_${op.createdAt}.jpg`;
-        const up = await sb.storage.from('photos').upload(path, blob, { upsert: true, contentType: 'image/jpeg' });
-        if (up.error) throw up.error;
+        const up = await sb.storage.from('photos').upload(path, blob, { contentType: 'image/jpeg' });
+        // 再送時に既にアップロード済みだった場合は成功扱い
+        if (up.error && !/already exists|duplicate/i.test(up.error.message || '')) throw up.error;
         p.photo_url = sb.storage.from('photos').getPublicUrl(path).data.publicUrl;
       }
     }
@@ -830,6 +941,7 @@ function bindEvents() {
     const code = $('manual-barcode').value.trim();
     if (code) { handleBarcode(code); $('manual-barcode').value = ''; }
   });
+  $('photo-scan-input').addEventListener('change', onPhotoScan);
   $('no-barcode-btn').addEventListener('click', () => {
     if (state.viewStoreId !== state.myStoreId) { toast('自店舗表示に切り替えてください', true); return; }
     stopScan();

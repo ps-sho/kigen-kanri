@@ -97,6 +97,10 @@
       <p id="scan-status" class="scan-status">カメラを起動しています…</p>
     </div>
     <div class="scan-manual">
+      <label class="btn btn-secondary">
+        📸 写真を撮って読み取る(読み取れない時はこちら)
+        <input id="photo-scan-input" type="file" accept="image/*" capture="environment" hidden>
+      </label>
       <form id="manual-barcode-form">
         <input id="manual-barcode" type="text" inputmode="numeric" placeholder="バーコード番号を手入力">
         <button type="submit" class="btn btn-secondary">検索</button>
