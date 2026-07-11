@@ -1,5 +1,5 @@
 // Service Worker: アプリ本体をキャッシュしてオフラインでも起動できるようにする
-const VERSION = 'kigen-v4';
+const VERSION = 'kigen-v5';
 const PHOTO_CACHE = 'kigen-photos-v1';
 const SHELL = [
   './',
@@ -31,6 +31,9 @@ self.addEventListener('activate', (e) => {
 self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
   if (e.request.method !== 'GET') return;
+
+  // GAS版の画面(/gas/)はこのService Workerの管理外とする(常に最新を取得)
+  if (url.origin === location.origin && url.pathname.includes('/gas/')) return;
 
   // アプリ本体: キャッシュ優先 + 裏で更新(次回起動時に反映)
   if (url.origin === location.origin) {

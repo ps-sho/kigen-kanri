@@ -274,7 +274,7 @@ window.addEventListener('unhandledrejection', function (e) {
       <p class="muted">ログイン中: <span id="settings-store-name">—</span></p>
       <button id="logout-btn" class="btn btn-danger-outline">ログアウト(店舗の切り替え)</button>
     </div>
-    <p class="muted version">GAS版 1.1.1</p>
+    <p class="muted version">GAS版 1.2.0</p>
   </main>
 
   <nav id="bottom-nav">
@@ -362,15 +362,33 @@ function lsGet(k) { try { return localStorage.getItem(k); } catch (_) { return n
 function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (_) {} }
 function lsDel(k) { try { localStorage.removeItem(k); } catch (_) {} }
 
-/* ── サーバー呼び出し(google.script.run のPromise化)── */
-function gs(fn, ...args) {
-  if (typeof google === 'undefined') return mockGs(fn, args);  // ローカルプレビュー用
-  return new Promise((resolve, reject) => {
-    google.script.run
-      .withSuccessHandler(resolve)
-      .withFailureHandler((e) => reject(new Error(e && e.message ? e.message : String(e))))
-      [fn](...args);
-  });
+/* ── GASのAPI(ウェブアプリ)のURL ──
+   このページはGitHub Pagesから配信され、データの読み書きだけを
+   下記のGASウェブアプリに依頼する。GASの再デプロイでURLが変わったら
+   ここを書き換える。 */
+const GAS_API_URL = 'https://script.google.com/macros/s/AKfycbyx_pVVYtYq9YIuUop8gz9QPcRTDq29gsyKiYduikGc4DfFlw7U0pAZfC7fgUMJrN7ncA/exec';
+
+/* ── サーバー呼び出し ── */
+async function gs(fn, ...args) {
+  // GASの画面内で開かれた場合は google.script.run を使う
+  if (typeof google !== 'undefined' && google.script && google.script.run) {
+    return new Promise((resolve, reject) => {
+      google.script.run
+        .withSuccessHandler(resolve)
+        .withFailureHandler((e) => reject(new Error(e && e.message ? e.message : String(e))))
+        [fn](...args);
+    });
+  }
+  // GitHub Pages等の外部から開かれた場合はAPIとして呼び出す
+  if (GAS_API_URL && GAS_API_URL.indexOf('https://script.google.com/') === 0) {
+    const res = await fetch(GAS_API_URL, { method: 'POST', body: JSON.stringify({ fn: fn, args: args }) });
+    let data;
+    try { data = await res.json(); }
+    catch (_) { throw new Error('GAS側の準備ができていません(Code.gsの更新と再デプロイが必要です)'); }
+    if (!data.ok) throw new Error(data.error || '不明なエラー');
+    return data.result;
+  }
+  return mockGs(fn, args);  // ローカルプレビュー用
 }
 
 /* ── ローカルプレビュー用の疑似サーバー(GAS外で開いた時だけ動く)── */
