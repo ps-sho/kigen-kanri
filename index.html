@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>期限管理</title>
+<meta name="theme-color" content="#0f766e">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="期限管理">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<!-- ═══ ログイン画面 ═══ -->
+<section id="view-login" class="view" hidden>
+  <div class="login-box">
+    <div class="app-logo">📦</div>
+    <h1>期限管理</h1>
+    <p class="login-note">店舗を選んでパスワードを入力してください</p>
+    <div id="login-stores" class="store-grid"></div>
+    <form id="login-form">
+      <input id="login-password" type="password" placeholder="この店舗のパスワード" autocomplete="current-password" required>
+      <button type="submit" class="btn btn-primary btn-lg" id="login-btn">ログイン</button>
+    </form>
+    <p id="login-error" class="error-msg" hidden></p>
+    <p id="login-offline" class="muted" hidden>オフラインのため、ログインには通信が必要です</p>
+  </div>
+</section>
+
+<!-- ═══ 作業開始確認画面 ═══ -->
+<section id="view-start" class="view" hidden>
+  <div class="login-box">
+    <div class="app-logo">📦</div>
+    <h1>期限管理</h1>
+    <div class="start-store-card">
+      <span class="muted">ログイン中の店舗</span>
+      <strong id="start-store-name">—</strong>
+    </div>
+    <button id="start-btn" class="btn btn-primary btn-lg">この店舗で作業開始</button>
+    <button id="start-switch" class="btn btn-ghost">別の店舗に切り替える</button>
+  </div>
+</section>
+
+<!-- ═══ メイン画面 ═══ -->
+<div id="view-main" class="view" hidden>
+  <header id="app-header">
+    <div class="header-store" id="header-store" title="作業中の店舗">
+      <span class="header-store-label">作業店舗</span>
+      <span class="header-store-name" id="header-store-name">—</span>
+    </div>
+    <div class="header-right">
+      <span id="sync-badge" class="sync-badge" hidden>未送信 <b id="sync-count">0</b></span>
+      <span id="offline-badge" class="offline-badge" hidden>オフライン</span>
+    </div>
+  </header>
+
+  <!-- ── 商品一覧タブ ── -->
+  <main id="tab-list" class="tab-page">
+    <div class="list-controls">
+      <div class="view-store-row">
+        <label for="view-store-select">表示店舗</label>
+        <select id="view-store-select"></select>
+        <span id="readonly-note" class="readonly-note" hidden>閲覧のみ</span>
+      </div>
+      <input id="search-box" type="search" placeholder="商品名・バーコードで検索">
+      <div class="filter-row">
+        <div class="chips" id="filter-chips">
+          <button class="chip active" data-filter="all">すべて</button>
+          <button class="chip chip-expired" data-filter="expired">期限切れ <b id="cnt-expired">0</b></button>
+          <button class="chip chip-danger" data-filter="danger">7日以内 <b id="cnt-danger">0</b></button>
+          <button class="chip chip-warn" data-filter="warn">30日以内 <b id="cnt-warn">0</b></button>
+        </div>
+        <select id="sort-select">
+          <option value="expiry">期限が近い順</option>
+          <option value="name">商品名順</option>
+          <option value="qty">在庫が少ない順</option>
+        </select>
+      </div>
+    </div>
+    <div id="product-list" class="product-list"></div>
+    <div id="list-empty" class="empty-state" hidden>
+      <p>商品が登録されていません</p>
+      <p class="muted">「読取」タブからバーコードを読み取って登録できます</p>
+    </div>
+  </main>
+
+  <!-- ── バーコード読取タブ ── -->
+  <main id="tab-scan" class="tab-page" hidden>
+    <div class="scan-area">
+      <video id="scan-video" playsinline muted></video>
+      <div class="scan-frame"></div>
+      <p id="scan-status" class="scan-status">カメラを起動しています…</p>
+    </div>
+    <div class="scan-manual">
+      <form id="manual-barcode-form">
+        <input id="manual-barcode" type="text" inputmode="numeric" placeholder="バーコード番号を手入力">
+        <button type="submit" class="btn btn-secondary">検索</button>
+      </form>
+      <button id="no-barcode-btn" class="btn btn-ghost">バーコードなしで商品を登録</button>
+    </div>
+  </main>
+
+  <!-- ── 設定タブ ── -->
+  <main id="tab-settings" class="tab-page" hidden>
+    <h2>設定</h2>
+    <div class="settings-group">
+      <h3>店舗名の変更</h3>
+      <div id="settings-stores"></div>
+    </div>
+    <div class="settings-group">
+      <h3>同期</h3>
+      <p>未送信の変更: <b id="settings-sync-count">0</b> 件</p>
+      <button id="sync-now-btn" class="btn btn-secondary">今すぐ同期</button>
+    </div>
+    <div class="settings-group">
+      <h3>アカウント</h3>
+      <p class="muted">ログイン中: <span id="settings-store-name">—</span></p>
+      <button id="logout-btn" class="btn btn-danger-outline">ログアウト(店舗の切り替え)</button>
+    </div>
+    <p class="muted version">バージョン <span id="app-version"></span></p>
+  </main>
+
+  <!-- ── 下部ナビ ── -->
+  <nav id="bottom-nav">
+    <button class="nav-btn active" data-tab="list"><span class="nav-icon">📋</span>一覧</button>
+    <button class="nav-btn" data-tab="scan"><span class="nav-icon">📷</span>読取</button>
+    <button class="nav-btn" data-tab="settings"><span class="nav-icon">⚙️</span>設定</button>
+  </nav>
+</div>
+
+<!-- ═══ 商品登録・編集フォーム ═══ -->
+<section id="view-form" class="view" hidden>
+  <header class="form-header">
+    <button id="form-back" class="btn-icon">←</button>
+    <h2 id="form-title">商品を登録</h2>
+  </header>
+  <form id="product-form" class="form-body">
+    <div class="field">
+      <label>バーコード</label>
+      <div class="barcode-row">
+        <input id="f-barcode" type="text" inputmode="numeric" placeholder="(なしでも登録できます)">
+      </div>
+    </div>
+    <div class="field">
+      <label>商品写真</label>
+      <div class="photo-area">
+        <img id="f-photo-preview" alt="" hidden>
+        <label class="btn btn-secondary photo-btn">
+          📷 写真を撮る
+          <input id="f-photo" type="file" accept="image/*" capture="environment" hidden>
+        </label>
+      </div>
+      <button type="button" id="ocr-btn" class="btn btn-ghost" hidden>🔍 写真から商品名候補を読み取る</button>
+      <div id="ocr-status" class="muted" hidden></div>
+      <div id="ocr-chips" class="chips"></div>
+    </div>
+    <div class="field">
+      <label for="f-name">商品名 <span class="req">必須</span></label>
+      <input id="f-name" type="text" placeholder="例: ○○ビタミン錠 60錠" required>
+    </div>
+    <div class="field" id="lot-fields">
+      <label for="f-expiry">賞味期限・使用期限 <span class="req">必須</span></label>
+      <input id="f-expiry" type="date" required>
+      <label class="check-row"><input id="f-month-only" type="checkbox">「年月」までの表示の商品(月末の日付として登録)</label>
+      <input id="f-expiry-month" type="month" hidden>
+    </div>
+    <div class="field">
+      <label for="f-qty">在庫数 <span class="req">必須</span></label>
+      <div class="qty-row">
+        <button type="button" class="qty-btn" id="f-qty-minus">−</button>
+        <input id="f-qty" type="number" inputmode="numeric" min="0" value="1" required>
+        <button type="button" class="qty-btn" id="f-qty-plus">＋</button>
+      </div>
+    </div>
+    <button type="submit" class="btn btn-primary btn-lg" id="form-save">保存する</button>
+  </form>
+</section>
+
+<!-- ═══ 商品詳細(下から出るシート) ═══ -->
+<div id="sheet-backdrop" hidden></div>
+<section id="sheet-product" class="sheet" hidden>
+  <div class="sheet-handle"></div>
+  <div class="sheet-body" id="sheet-body"></div>
+</section>
+
+<div id="toast-container"></div>
+
+<script src="vendor/supabase.min.js"></script>
+<script src="vendor/zxing.min.js"></script>
+<script src="js/config.js"></script>
+<script src="js/db.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

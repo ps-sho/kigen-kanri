@@ -1,0 +1,32 @@
+# Supabase無料プランの「アクセスがないと一時停止する」仕様への対策。
+# 週1回データベースに軽いアクセスを行い、あわせて日付ファイルを更新して
+# このワークフロー自体が無効化されないようにする(すべて無料の範囲内)。
+name: keepalive
+on:
+  schedule:
+    - cron: '0 21 * * 0'   # 毎週月曜 朝6時(日本時間)
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Supabaseにアクセスして停止を防ぐ
+        run: |
+          code=$(curl -s -o /dev/null -w "%{http_code}" \
+            "https://rlydgglmoxpuepupddva.supabase.co/rest/v1/stores?select=id&limit=1" \
+            -H "apikey: sb_publishable_TAEH6tE9p6TlBVIFCWXfLA_sLaPatZx")
+          echo "Supabase response: $code"
+          test "$code" = "200"
+      - name: 実行記録を更新(ワークフローの自動無効化を防ぐ)
+        run: |
+          date > .keepalive
+          git config user.name "keepalive-bot"
+          git config user.email "actions@github.com"
+          git add .keepalive
+          git commit -m "keepalive: $(date +%Y-%m-%d)" || exit 0
+          git push
