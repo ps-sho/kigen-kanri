@@ -155,6 +155,11 @@ h3{font-size:15px;margin:0 0 8px;color:var(--muted)}
 .badge-disposed{background:#fee2e2;color:var(--danger);font-size:11px}
 .disposal-box{background:#fef2f2;border:1.5px solid #fca5a5;border-radius:10px;padding:10px 12px;font-size:13px}
 .disposal-row{padding:2px 0;font-weight:600;color:#991b1b}
+.btn-mini-primary{background:var(--primary);color:#fff;border-color:var(--primary)}
+.qty-dirty{color:var(--warn)}
+.disposal-item{background:var(--card);border-radius:var(--radius);padding:12px;margin-bottom:10px;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+.disposal-item-name{font-weight:700}
+.disposal-item-date{font-size:12px;color:var(--danger);font-weight:600}
 </style>
 </head>
 <body>
@@ -281,6 +286,11 @@ window.addEventListener('unhandledrejection', function (e) {
       <div id="settings-stores"></div>
     </div>
     <div class="settings-group">
+      <h3>廃棄記録</h3>
+      <p class="muted">これまでの廃棄: <b id="disposal-count">0</b> 件</p>
+      <button id="show-disposals-btn" class="btn btn-secondary">🚮 廃棄記録を見る</button>
+    </div>
+    <div class="settings-group">
       <h3>データ</h3>
       <button id="reload-btn" class="btn btn-secondary">最新のデータを読み込む</button>
     </div>
@@ -289,7 +299,15 @@ window.addEventListener('unhandledrejection', function (e) {
       <p class="muted">ログイン中: <span id="settings-store-name">—</span></p>
       <button id="logout-btn" class="btn btn-danger-outline">ログアウト(店舗の切り替え)</button>
     </div>
-    <p class="muted version">バージョン 2.1.0</p>
+    <p class="muted version">バージョン 2.2.0</p>
+  </main>
+
+  <!-- ── 廃棄記録ページ ── -->
+  <main id="tab-disposals" class="tab-page" hidden>
+    <button id="disposals-back" class="btn btn-ghost" style="text-align:left;width:auto;padding:8px 4px">← 設定に戻る</button>
+    <h2>🚮 廃棄記録</h2>
+    <p class="muted">期限切れで廃棄した商品の記録です(全店舗)。仕入れ数の参考にしてください。スプレッドシートの「廃棄記録」シートでも確認できます。</p>
+    <div id="disposal-list"></div>
   </main>
 
   <nav id="bottom-nav">
@@ -334,7 +352,7 @@ window.addEventListener('unhandledrejection', function (e) {
       <label class="check-row"><input id="f-day-exact" type="checkbox">日付まで指定する</label>
       <input id="f-expiry" type="date" hidden>
     </div>
-    <div class="field">
+    <div class="field" id="field-qty">
       <label for="f-qty">在庫数 <span class="req">必須</span></label>
       <div class="qty-row">
         <button type="button" class="qty-btn" id="f-qty-minus">−</button>
@@ -436,6 +454,18 @@ async function mockGs(fn, args) {
       if (i >= 0) mockDb.lots[i] = l; else mockDb.lots.push(l);
       return { ok: true };
     }
+    case 'apiSaveProductAndLot': {
+      const p = args[1];
+      if (args[2]) p.photoUrl = 'data:image/jpeg;base64,' + args[2];
+      const i = mockDb.products.findIndex(x => x.id === p.id);
+      if (i >= 0) mockDb.products[i] = p; else mockDb.products.push(p);
+      if (args[3]) {
+        const l = args[3];
+        const j = mockDb.lots.findIndex(x => x.id === l.id);
+        if (j >= 0) mockDb.lots[j] = l; else mockDb.lots.push(l);
+      }
+      return { ok: true, product: p };
+    }
     case 'apiDeleteLot': mockDb.lots = mockDb.lots.filter(x => x.id !== args[1]); return { ok: true };
     case 'apiDisposeLot': {
       const lot = mockDb.lots.find(x => x.id === args[1]);
@@ -529,10 +559,16 @@ async function enterMain() {
   await reloadAll();
 }
 
+// ローカルでの変更回数。読み込み中に変更が入ったら、その読み込み結果は捨てる
+let dataVersion = 0;
+function markLocalChange() { dataVersion++; }
+
 async function reloadAll() {
   busy(true);
   try {
+    const v = dataVersion;
     const data = await gs('apiGetAll', state.auth);
+    if (v !== dataVersion) return; // 古いスナップショットで最新のローカル変更を消さない
     state.stores = data.stores;
     state.products = data.products;
     state.lots = data.lots.map((l) => ({ ...l, qty: Number(l.qty) }));
@@ -643,6 +679,10 @@ function openSheet(productId) {
   $('sheet-product').hidden = false;
 }
 function closeSheet() {
+  if (pendingQty.size > 0) {
+    if (!confirm('在庫数の変更が保存されていません。破棄して閉じますか?')) return;
+    pendingQty.clear();
+  }
   sheetProductId = null;
   $('sheet-backdrop').hidden = true;
   $('sheet-product').hidden = true;
@@ -692,18 +732,26 @@ function renderSheet() {
       </div>
     </div>
     <div class="sheet-section-title">${esc(storeName)} の期限と在庫</div>
-    ${lots.map((l) => `
+    ${lots.map((l) => {
+      const shown = pendingQty.has(l.id) ? pendingQty.get(l.id) : l.qty;
+      const dirty = pendingQty.has(l.id);
+      return `
       <div class="lot-row" data-lot="${l.id}">
         <div class="lot-row-date">${fmtDate(l.expiry)}${badgeHtml(l.expiry)}</div>
         ${editable ? '<button class="qty-btn" data-act="minus">−</button>' : ''}
-        <span class="lot-row-qty">${l.qty}</span>
+        <span class="lot-row-qty${dirty ? ' qty-dirty' : ''}">${shown}</span>
         ${editable ? '<button class="qty-btn" data-act="plus">＋</button>' : ''}
       </div>
+      ${editable && dirty ? `<div class="lot-actions" data-lot="${l.id}">
+        <button class="btn-mini btn-mini-primary" data-act="saveqty">💾 在庫数を ${shown} に変更する</button>
+        <button class="btn-mini" data-act="cancelqty">取消</button>
+      </div>` : ''}
       ${editable ? `<div class="lot-actions" data-lot="${l.id}">
-        <button class="btn-mini" data-act="edit">✏️ 期限・在庫数を変更</button>
+        <button class="btn-mini" data-act="edit">✏️ 期限を変更</button>
         <button class="btn-mini btn-mini-warn" data-act="dispose">🚮 廃棄として記録</button>
         <button class="btn-mini" data-act="del">削除</button>
-      </div>` : ''}`).join('') || '<p class="muted">この店舗には在庫が登録されていません</p>'}
+      </div>` : ''}`;
+    }).join('') || '<p class="muted">この店舗には在庫が登録されていません</p>'}
     ${editable && !lots.length ? '<button class="btn btn-secondary" id="sheet-add-lot">＋ この店舗の期限・在庫を登録</button>' : ''}
     ${disposalHtml}
     <div class="sheet-section-title">他店舗の在庫状況</div>
@@ -733,32 +781,55 @@ async function onSheetPhotoSelected(e) {
 }
 
 /* ── 在庫の増減・削除 ── */
-const lotTimers = new Map();
+// ±ボタンはまず画面上の数だけ変わり、「在庫数を変更する」ボタンで確定保存する
+const pendingQty = new Map();
 
 function changeLotQty(lotId, delta) {
   const lot = state.lots.find((l) => l.id === lotId);
   if (!lot) return;
-  lot.qty = Math.max(0, lot.qty + delta);
-  const el = document.querySelector(`.lot-row[data-lot="${lotId}"] .lot-row-qty`);
-  if (el) el.textContent = lot.qty;
+  const current = pendingQty.has(lotId) ? pendingQty.get(lotId) : lot.qty;
+  const next = Math.max(0, current + delta);
+  if (next === lot.qty) pendingQty.delete(lotId); else pendingQty.set(lotId, next);
+  renderSheet();
+}
+
+function saveQty(lotId) {
+  const lot = state.lots.find((l) => l.id === lotId);
+  if (!lot || !pendingQty.has(lotId)) return;
+  lot.qty = pendingQty.get(lotId);
+  pendingQty.delete(lotId);
+  markLocalChange();
+  renderSheet();
   renderList();
-  clearTimeout(lotTimers.get(lotId));
-  lotTimers.set(lotId, setTimeout(async () => {
-    busy(true);
-    try { await gs('apiSaveLot', state.auth, { ...lot }); }
-    catch (e) { toast('保存できませんでした: ' + e.message, true); reloadAll(); }
-    finally { busy(false); }
-  }, 600));
+  toast('保存中…');
+  syncInBackground(async () => {
+    await gs('apiSaveLot', state.auth, { ...lot });
+    toast('在庫数を保存しました');
+  });
+}
+
+// 送信を裏で行い、失敗したら知らせて最新状態を取り直す(体感速度の改善)
+function syncInBackground(job) {
+  busy(true);
+  Promise.resolve().then(job)
+    .then(() => busy(false))
+    .catch((e) => {
+      busy(false);
+      toast('保存できませんでした: ' + e.message, true);
+      reloadAll();
+    });
 }
 
 async function disposeLot(lotId) {
   const lot = state.lots.find((l) => l.id === lotId);
   if (!lot) return;
+  pendingQty.delete(lotId);
   if (!confirm('この在庫を「期限切れ廃棄」として記録しますか?\n(在庫一覧から消え、廃棄記録に残ります)')) return;
   busy(true);
   try {
     const r = await gs('apiDisposeLot', state.auth, lotId);
     state.lots = state.lots.filter((l) => l.id !== lotId);
+    markLocalChange();
     if (r && r.disposal) state.disposals.push({ ...r.disposal, qty: Number(r.disposal.qty) });
     renderSheet(); renderList();
     toast('廃棄として記録しました');
@@ -770,7 +841,9 @@ async function disposeLot(lotId) {
 
 async function deleteLot(lotId) {
   if (!confirm('この期限の在庫記録を削除しますか?')) return;
+  pendingQty.delete(lotId);
   state.lots = state.lots.filter((l) => l.id !== lotId);
+  markLocalChange();
   renderSheet(); renderList();
   busy(true);
   try { await gs('apiDeleteLot', state.auth, lotId); toast('削除しました'); }
@@ -793,7 +866,9 @@ function openForm(mode, opts = {}) {
   formState.product = opts.product || null;
   formState.lot = opts.lot || null;
   formState.photoBlob = null;
-  $('form-title').textContent = mode === 'editLot' ? '期限・在庫数を変更' : '商品を登録';
+  $('form-title').textContent = mode === 'editLot'
+    ? (formState.lot ? '期限を変更' : '期限・在庫を登録')
+    : '商品を登録';
   $('f-barcode').value = opts.barcode || formState.product?.barcode || '';
   $('f-name').value = formState.product?.name || '';
   $('f-name').readOnly = mode === 'editLot';
@@ -813,12 +888,12 @@ function openForm(mode, opts = {}) {
   $('f-qty').value = 1;
   $('field-barcode').hidden = mode === 'editLot';
   $('field-photo').hidden = mode === 'editLot';
-  // 変更モードでは現在の期限・在庫数をあらかじめ入れておく
+  // 期限変更モード: 在庫数は±ボタン側で管理するため隠し、現在の期限を入れておく
+  $('field-qty').hidden = mode === 'editLot' && !!formState.lot;
   if (mode === 'editLot' && formState.lot) {
     $('f-day-exact').checked = true;
     $('f-day-exact').dispatchEvent(new Event('change'));
     $('f-expiry').value = formState.lot.expiry;
-    $('f-qty').value = formState.lot.qty;
   }
   if (formState.product?.photoUrl) {
     $('f-photo-preview').src = formState.product.photoUrl;
@@ -879,50 +954,66 @@ async function saveForm(e) {
   e.preventDefault();
   const name = $('f-name').value.trim();
   const expiry = getExpiryValue();
-  const qty = Math.max(0, parseInt($('f-qty').value, 10) || 0);
+  const editingLot = formState.mode === 'editLot' ? formState.lot : null;
+  // 期限変更モードでは在庫数は変えない(±ボタン側で管理)
+  const qty = editingLot ? Number(editingLot.qty) : Math.max(0, parseInt($('f-qty').value, 10) || 0);
   if (!name) { toast('商品名を入力してください', true); return; }
   if (!expiry) { toast('期限を入力してください', true); return; }
 
-  const saveBtn = $('form-save');
-  saveBtn.disabled = true; saveBtn.textContent = '保存中…';
-  busy(true);
-  try {
-    let product = formState.product;
-    if (formState.mode !== 'editLot') {
-      const barcode = $('f-barcode').value.trim() || '';
-      const existing = barcode ? state.products.find((p) => p.barcode === barcode) : null;
-      product = existing
-        ? { ...existing, name }
-        : { id: uuid(), barcode, name, photoUrl: '' };
-      const photoBase64 = formState.photoBlob ? await blobToBase64(formState.photoBlob) : null;
-      const r = await gs('apiSaveProduct', state.auth, product, photoBase64);
-      product = r.product;
-      const i = state.products.findIndex((p) => p.id === product.id);
-      if (i >= 0) state.products[i] = product; else state.products.push(product);
-    }
-    // 1商品につき期限は1つ: この店舗に既存の在庫記録があれば上書き更新する
-    const current = formState.lot
-      || state.lots.find((l) => l.productId === product.id && l.storeId === state.myStore.id);
-    if (current) {
-      current.expiry = expiry;
-      current.qty = qty;
-      await gs('apiSaveLot', state.auth, { ...current });
-      toast('期限と在庫数を更新しました');
-    } else {
-      const lot = { id: uuid(), productId: product.id, storeId: state.myStore.id, expiry, qty };
-      state.lots.push(lot);
-      await gs('apiSaveLot', state.auth, lot);
-      toast('保存しました');
-    }
-    showView('view-main');
-    switchTab('list');
-    renderAll();
-  } catch (ex) {
-    toast('保存できませんでした: ' + ex.message, true);
-  } finally {
-    busy(false);
-    saveBtn.disabled = false; saveBtn.textContent = '保存する';
+  // ── まず画面に反映して一覧へ戻り、送信は裏で行う(体感速度の改善)──
+  let product = formState.product;
+  let isNewProduct = false;
+  if (formState.mode !== 'editLot') {
+    const barcode = $('f-barcode').value.trim() || '';
+    const existing = barcode ? state.products.find((p) => p.barcode === barcode) : null;
+    product = existing ? { ...existing, name } : { id: uuid(), barcode, name, photoUrl: '' };
+    isNewProduct = true;
+    const i = state.products.findIndex((p) => p.id === product.id);
+    if (i >= 0) state.products[i] = product; else state.products.push(product);
   }
+  // 1商品につき期限は1つ: この店舗に既存の在庫記録があれば上書き更新する
+  let lot = editingLot
+    || state.lots.find((l) => l.productId === product.id && l.storeId === state.myStore.id);
+  if (lot) {
+    lot.expiry = expiry;
+    lot.qty = qty;
+  } else {
+    lot = { id: uuid(), productId: product.id, storeId: state.myStore.id, expiry, qty };
+    state.lots.push(lot);
+  }
+  markLocalChange();
+  const photoBlob = formState.photoBlob;
+  const lotPayload = { ...lot };
+  showView('view-main');
+  switchTab('list');
+  renderAll();
+  toast('保存中…');
+
+  syncInBackground(async () => {
+    if (isNewProduct) {
+      const productPayload = { id: product.id, barcode: product.barcode, name: product.name, photoUrl: product.photoUrl || '' };
+      const photoBase64 = photoBlob ? await blobToBase64(photoBlob) : null;
+      let saved;
+      try {
+        // 商品と在庫を1回の通信でまとめて送る(高速)
+        saved = await gs('apiSaveProductAndLot', state.auth, productPayload, photoBase64, lotPayload);
+      } catch (err) {
+        // データ係が旧バージョンの場合は従来の2回方式で送る
+        if (/不明な操作/.test(err.message || '')) {
+          saved = await gs('apiSaveProduct', state.auth, productPayload, photoBase64);
+          await gs('apiSaveLot', state.auth, lotPayload);
+        } else { throw err; }
+      }
+      if (saved && saved.product) {
+        const i = state.products.findIndex((p) => p.id === saved.product.id);
+        if (i >= 0) state.products[i] = saved.product;
+        renderList();
+      }
+    } else {
+      await gs('apiSaveLot', state.auth, lotPayload);
+    }
+    toast('保存しました');
+  });
 }
 
 /* ── OCR ── */
@@ -1167,7 +1258,18 @@ function handleBarcode(code) {
 }
 
 /* ── 設定 ── */
+function renderDisposals() {
+  const items = [...state.disposals].sort((a, b) => (b.disposedAt || '').localeCompare(a.disposedAt || ''));
+  $('disposal-list').innerHTML = items.map((d) => `
+    <div class="disposal-item">
+      <div class="disposal-item-name">${esc(d.productName || '(名称不明)')}</div>
+      <div class="muted">${esc(d.storeName || '')} / 期限 ${fmtDate(d.expiry)} / 数量 ${d.qty}</div>
+      <div class="disposal-item-date">${d.disposedAt ? fmtDate(d.disposedAt) + ' に廃棄' : ''}</div>
+    </div>`).join('') || '<div class="empty-state"><p>廃棄記録はまだありません</p></div>';
+}
+
 function renderSettings() {
+  $('disposal-count').textContent = state.disposals.length;
   $('settings-stores').innerHTML = state.stores.map((s) => `
     <div class="settings-store-row">
       <span>${esc(s.name)}${s.id === state.myStore.id ? ' <b>(自店舗)</b>' : ''}</span>
@@ -1180,6 +1282,7 @@ async function renameStore(storeId) {
   const name = prompt('新しい店舗名を入力してください', store?.name || '');
   if (!name || !name.trim()) return;
   store.name = name.trim();
+  markLocalChange();
   renderAll();
   busy(true);
   try { await gs('apiRenameStore', state.auth, storeId, store.name); toast('店舗名を変更しました'); }
@@ -1190,7 +1293,8 @@ async function renameStore(storeId) {
 /* ── タブ・共通 ── */
 function switchTab(tab) {
   state.tab = tab;
-  ['list', 'scan', 'settings'].forEach((t) => { $('tab-' + t).hidden = t !== tab; });
+  ['list', 'scan', 'settings', 'disposals'].forEach((t) => { $('tab-' + t).hidden = t !== tab; });
+  if (tab === 'disposals') renderDisposals();
   document.querySelectorAll('.nav-btn').forEach((b) => b.classList.toggle('active', b.dataset.tab === tab));
   if (tab === 'scan') startScan(); else stopScan();
 }
@@ -1255,6 +1359,8 @@ function bindEvents() {
       if (state.viewStoreId !== state.myStore.id) return;
       if (act === 'plus') changeLotQty(lotRow.dataset.lot, 1);
       if (act === 'minus') changeLotQty(lotRow.dataset.lot, -1);
+      if (act === 'saveqty') saveQty(lotRow.dataset.lot);
+      if (act === 'cancelqty') { pendingQty.delete(lotRow.dataset.lot); renderSheet(); }
       if (act === 'del') deleteLot(lotRow.dataset.lot);
       if (act === 'edit') {
         const p = state.products.find((x) => x.id === sheetProductId);
@@ -1279,6 +1385,7 @@ function bindEvents() {
       const name = prompt('商品名を変更', p.name);
       if (name && name.trim() && name.trim() !== p.name) {
         p.name = name.trim();
+        markLocalChange();
         renderSheet(); renderList();
         gs('apiSaveProduct', state.auth, { ...p }, null)
           .catch((e2) => { toast('変更できませんでした: ' + e2.message, true); reloadAll(); });
@@ -1307,6 +1414,8 @@ function bindEvents() {
     const btn = e.target.closest('[data-rename]');
     if (btn) renameStore(btn.dataset.rename);
   });
+  $('show-disposals-btn').addEventListener('click', () => switchTab('disposals'));
+  $('disposals-back').addEventListener('click', () => switchTab('settings'));
   $('reload-btn').addEventListener('click', async () => { await reloadAll(); toast('最新のデータを読み込みました'); });
   $('logout-btn').addEventListener('click', () => {
     if (!confirm('ログアウトして店舗を切り替えますか?')) return;
