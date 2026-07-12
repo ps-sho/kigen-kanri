@@ -160,6 +160,7 @@ h3{font-size:15px;margin:0 0 8px;color:var(--muted)}
 .disposal-item{background:var(--card);border-radius:var(--radius);padding:12px;margin-bottom:10px;box-shadow:0 1px 3px rgba(0,0,0,.08)}
 .disposal-item-name{font-weight:700}
 .disposal-item-date{font-size:12px;color:var(--danger);font-weight:600}
+.disposal-del{margin-top:8px}
 </style>
 </head>
 <body>
@@ -300,7 +301,7 @@ window.addEventListener('unhandledrejection', function (e) {
       <p class="muted">ログイン中: <span id="settings-store-name">—</span></p>
       <button id="logout-btn" class="btn btn-danger-outline">ログアウト(店舗の切り替え)</button>
     </div>
-    <p class="muted version">バージョン 2.3.0</p>
+    <p class="muted version">バージョン 2.4.0</p>
   </main>
 
   <!-- ── 廃棄記録ページ ── -->
@@ -484,6 +485,7 @@ async function mockGs(fn, args) {
       return { ok: true, disposal: d };
     }
     case 'apiRenameStore': { const s = mockDb.stores.find(x => x.id === args[1]); if (s) s.name = args[2]; return { ok: true }; }
+    case 'apiDeleteDisposal': mockDb.disposals = mockDb.disposals.filter(x => x.id !== args[1]); return { ok: true };
     case 'apiAddStore': {
       const st = { id: 's' + Date.now(), name: args[1], sort: mockDb.stores.length + 1, password: args[2] };
       mockDb.stores.push(st);
@@ -1277,7 +1279,22 @@ function renderDisposals() {
       <div class="disposal-item-name">${esc(d.productName || '(名称不明)')}</div>
       <div class="muted">${esc(d.storeName || '')} / 期限 ${fmtDate(d.expiry)} / 数量 ${d.qty}</div>
       <div class="disposal-item-date">${d.disposedAt ? fmtDate(d.disposedAt) + ' に廃棄' : ''}</div>
+      ${d.storeId === state.myStore.id ? `<button class="btn-mini disposal-del" data-disposal="${d.id}">削除</button>` : ''}
     </div>`).join('') || '<div class="empty-state"><p>廃棄記録はまだありません</p></div>';
+}
+
+async function deleteDisposal(disposalId) {
+  if (!confirm('この廃棄記録を削除しますか?(誤って記録した場合の訂正用)')) return;
+  state.disposals = state.disposals.filter((d) => d.id !== disposalId);
+  markLocalChange();
+  renderDisposals();
+  renderList();
+  $('disposal-count').textContent = state.disposals.length;
+  toast('保存中…');
+  syncInBackground(async () => {
+    await gs('apiDeleteDisposal', state.auth, disposalId);
+    toast('廃棄記録を削除しました');
+  });
 }
 
 function renderSettings() {
@@ -1446,6 +1463,10 @@ function bindEvents() {
   $('add-store-btn').addEventListener('click', addStore);
   $('show-disposals-btn').addEventListener('click', () => switchTab('disposals'));
   $('disposals-back').addEventListener('click', () => switchTab('settings'));
+  $('disposal-list').addEventListener('click', (e) => {
+    const btn = e.target.closest('.disposal-del');
+    if (btn) deleteDisposal(btn.dataset.disposal);
+  });
   $('reload-btn').addEventListener('click', async () => { await reloadAll(); toast('最新のデータを読み込みました'); });
   $('logout-btn').addEventListener('click', () => {
     if (!confirm('ログアウトして店舗を切り替えますか?')) return;
