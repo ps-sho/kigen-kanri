@@ -149,6 +149,12 @@ h3{font-size:15px;margin:0 0 8px;color:var(--muted)}
 .camera-fallback{background:#fef3c7;border:1.5px solid #f59e0b;border-radius:var(--radius);padding:14px;font-size:14px}
 .camera-fallback p{margin:6px 0}
 .btn-small{width:auto;padding:8px 14px;font-size:13px;margin-top:8px}
+.lot-actions{display:flex;gap:6px;margin:-4px 0 10px;flex-wrap:wrap}
+.btn-mini{border:1.5px solid var(--border);background:var(--card);border-radius:8px;padding:7px 10px;font-size:12px;font-weight:600;cursor:pointer;color:var(--text)}
+.btn-mini-warn{color:var(--danger);border-color:#fca5a5}
+.badge-disposed{background:#fee2e2;color:var(--danger);font-size:11px}
+.disposal-box{background:#fef2f2;border:1.5px solid #fca5a5;border-radius:10px;padding:10px 12px;font-size:13px}
+.disposal-row{padding:2px 0;font-weight:600;color:#991b1b}
 </style>
 </head>
 <body>
@@ -283,7 +289,7 @@ window.addEventListener('unhandledrejection', function (e) {
       <p class="muted">ログイン中: <span id="settings-store-name">—</span></p>
       <button id="logout-btn" class="btn btn-danger-outline">ログアウト(店舗の切り替え)</button>
     </div>
-    <p class="muted version">バージョン 2.0.0(スプレッドシート方式)</p>
+    <p class="muted version">バージョン 2.1.0</p>
   </main>
 
   <nav id="bottom-nav">
@@ -360,6 +366,7 @@ const state = {
   auth: null,          // {storeId, password}
   myStore: null,       // {id, name}
   stores: [], products: [], lots: [],   // lotsは全店舗分
+  disposals: [],                         // 廃棄記録(全店舗分)
   viewStoreId: null,
   filter: 'all', sort: 'expiry', search: '', tab: 'list',
 };
@@ -403,7 +410,7 @@ async function gs(fn, ...args) {
 /* ── ローカルプレビュー用の疑似サーバー(GAS外で開いた時だけ動く)── */
 const mockDb = {
   stores: [1,2,3,4,5,6].map(i => ({ id: 's'+i, name: '店舗'+i, sort: i, password: String(i).repeat(4) })),
-  products: [], lots: [],
+  products: [], lots: [], disposals: [],
 };
 async function mockGs(fn, args) {
   $('preview-banner').hidden = false;
@@ -415,7 +422,7 @@ async function mockGs(fn, args) {
       const s = mockDb.stores.find(x => x.id === args[0] && x.password === args[1]);
       return s ? { ok: true, store: pub(s) } : { ok: false };
     }
-    case 'apiGetAll': return { stores: mockDb.stores.map(pub), products: mockDb.products, lots: mockDb.lots };
+    case 'apiGetAll': return { stores: mockDb.stores.map(pub), products: mockDb.products, lots: mockDb.lots, disposals: mockDb.disposals };
     case 'apiSaveProduct': {
       const p = args[1];
       if (args[2]) p.photoUrl = 'data:image/jpeg;base64,' + args[2];
@@ -430,6 +437,15 @@ async function mockGs(fn, args) {
       return { ok: true };
     }
     case 'apiDeleteLot': mockDb.lots = mockDb.lots.filter(x => x.id !== args[1]); return { ok: true };
+    case 'apiDisposeLot': {
+      const lot = mockDb.lots.find(x => x.id === args[1]);
+      mockDb.lots = mockDb.lots.filter(x => x.id !== args[1]);
+      const d = { id: 'd' + Date.now(), productId: lot.productId, storeId: lot.storeId, expiry: lot.expiry,
+        qty: lot.qty, disposedAt: new Date().toISOString().slice(0,10),
+        storeName: '店舗1', productName: (mockDb.products.find(p => p.id === lot.productId) || {}).name || '' };
+      mockDb.disposals.push(d);
+      return { ok: true, disposal: d };
+    }
     case 'apiRenameStore': { const s = mockDb.stores.find(x => x.id === args[1]); if (s) s.name = args[2]; return { ok: true }; }
   }
 }
@@ -508,7 +524,7 @@ async function enterMain() {
   // まずキャッシュで即表示 → サーバーから最新化
   try {
     const cached = JSON.parse(lsGet('kigen_gas_cache'));
-    if (cached) { Object.assign(state, { stores: cached.stores, products: cached.products, lots: cached.lots }); renderAll(); }
+    if (cached) { Object.assign(state, { stores: cached.stores, products: cached.products, lots: cached.lots, disposals: cached.disposals || [] }); renderAll(); }
   } catch (_) {}
   await reloadAll();
 }
@@ -520,7 +536,8 @@ async function reloadAll() {
     state.stores = data.stores;
     state.products = data.products;
     state.lots = data.lots.map((l) => ({ ...l, qty: Number(l.qty) }));
-    lsSet('kigen_gas_cache', JSON.stringify({ stores: state.stores, products: state.products, lots: state.lots }));
+    state.disposals = (data.disposals || []).map((d) => ({ ...d, qty: Number(d.qty) }));
+    lsSet('kigen_gas_cache', JSON.stringify({ stores: state.stores, products: state.products, lots: state.lots, disposals: state.disposals }));
     renderAll();
   } catch (e) {
     toast('データを読み込めません: ' + e.message, true);
@@ -604,7 +621,7 @@ function renderList() {
     <div class="product-card" data-product="${g.product.id}">
       ${thumbHtml(g.product)}
       <div class="product-info">
-        <div class="product-name">${esc(g.product.name)}</div>
+        <div class="product-name">${esc(g.product.name)}${state.disposals.some((d) => d.productId === g.product.id) ? ' <span class="badge badge-disposed">⚠️廃棄歴</span>' : ''}</div>
         ${g.lots.map((l) => `<div class="lot-line">${badgeHtml(l.expiry)}<span>${fmtDate(l.expiry)}</span><span class="lot-qty">在庫 ${l.qty}</span></div>`).join('')}
       </div>
     </div>`).join('');
@@ -646,6 +663,16 @@ function renderSheet() {
     if (!others.has(l.storeId)) others.set(l.storeId, []);
     others.get(l.storeId).push(l);
   }
+  const myDisposals = state.disposals
+    .filter((d) => d.productId === p.id)
+    .sort((a, b) => (b.disposedAt || '').localeCompare(a.disposedAt || ''));
+  const disposalHtml = myDisposals.length ? `
+    <div class="sheet-section-title">⚠️ 廃棄の記録(仕入れ時の参考)</div>
+    <div class="disposal-box">
+      ${myDisposals.slice(0, 5).map((d) => `<div class="disposal-row">${esc(d.storeName)}: 期限${fmtDate(d.expiry)} ×${d.qty} を ${d.disposedAt ? fmtDate(d.disposedAt) : ''} に廃棄</div>`).join('')}
+      <div class="muted">期限切れで売り切れなかった実績があります。仕入れ数の参考にしてください。</div>
+    </div>` : '';
+
   const otherHtml = others.size
     ? [...others.entries()].map(([sid, ls]) => {
         const name = state.stores.find((s) => s.id === sid)?.name || '不明';
@@ -670,9 +697,15 @@ function renderSheet() {
         <div class="lot-row-date">${fmtDate(l.expiry)}${badgeHtml(l.expiry)}</div>
         ${editable ? '<button class="qty-btn" data-act="minus">−</button>' : ''}
         <span class="lot-row-qty">${l.qty}</span>
-        ${editable ? '<button class="qty-btn" data-act="plus">＋</button><button class="lot-del-btn" data-act="del">🗑</button>' : ''}
-      </div>`).join('') || '<p class="muted">この店舗には在庫が登録されていません</p>'}
-    ${editable ? '<button class="btn btn-secondary" id="sheet-add-lot">＋ 新しい期限(入荷ロット)を追加</button>' : ''}
+        ${editable ? '<button class="qty-btn" data-act="plus">＋</button>' : ''}
+      </div>
+      ${editable ? `<div class="lot-actions" data-lot="${l.id}">
+        <button class="btn-mini" data-act="edit">✏️ 期限・在庫数を変更</button>
+        <button class="btn-mini btn-mini-warn" data-act="dispose">🚮 廃棄として記録</button>
+        <button class="btn-mini" data-act="del">削除</button>
+      </div>` : ''}`).join('') || '<p class="muted">この店舗には在庫が登録されていません</p>'}
+    ${editable && !lots.length ? '<button class="btn btn-secondary" id="sheet-add-lot">＋ この店舗の期限・在庫を登録</button>' : ''}
+    ${disposalHtml}
     <div class="sheet-section-title">他店舗の在庫状況</div>
     ${otherHtml}
   `;
@@ -718,6 +751,23 @@ function changeLotQty(lotId, delta) {
   }, 600));
 }
 
+async function disposeLot(lotId) {
+  const lot = state.lots.find((l) => l.id === lotId);
+  if (!lot) return;
+  if (!confirm('この在庫を「期限切れ廃棄」として記録しますか?\n(在庫一覧から消え、廃棄記録に残ります)')) return;
+  busy(true);
+  try {
+    const r = await gs('apiDisposeLot', state.auth, lotId);
+    state.lots = state.lots.filter((l) => l.id !== lotId);
+    if (r && r.disposal) state.disposals.push({ ...r.disposal, qty: Number(r.disposal.qty) });
+    renderSheet(); renderList();
+    toast('廃棄として記録しました');
+  } catch (e) {
+    toast('記録できませんでした: ' + e.message, true);
+    reloadAll();
+  } finally { busy(false); }
+}
+
 async function deleteLot(lotId) {
   if (!confirm('この期限の在庫記録を削除しますか?')) return;
   state.lots = state.lots.filter((l) => l.id !== lotId);
@@ -741,11 +791,12 @@ function uuid() {
 function openForm(mode, opts = {}) {
   formState.mode = mode;
   formState.product = opts.product || null;
+  formState.lot = opts.lot || null;
   formState.photoBlob = null;
-  $('form-title').textContent = mode === 'addLot' ? '期限を追加' : '商品を登録';
+  $('form-title').textContent = mode === 'editLot' ? '期限・在庫数を変更' : '商品を登録';
   $('f-barcode').value = opts.barcode || formState.product?.barcode || '';
   $('f-name').value = formState.product?.name || '';
-  $('f-name').readOnly = mode === 'addLot';
+  $('f-name').readOnly = mode === 'editLot';
   $('f-photo-preview').hidden = true;
   $('f-photo-preview').src = '';
   $('ocr-btn').hidden = true;
@@ -760,8 +811,15 @@ function openForm(mode, opts = {}) {
   $('f-expiry').hidden = true;
   $('f-expiry').required = false;
   $('f-qty').value = 1;
-  $('field-barcode').hidden = mode === 'addLot';
-  $('field-photo').hidden = mode === 'addLot';
+  $('field-barcode').hidden = mode === 'editLot';
+  $('field-photo').hidden = mode === 'editLot';
+  // 変更モードでは現在の期限・在庫数をあらかじめ入れておく
+  if (mode === 'editLot' && formState.lot) {
+    $('f-day-exact').checked = true;
+    $('f-day-exact').dispatchEvent(new Event('change'));
+    $('f-expiry').value = formState.lot.expiry;
+    $('f-qty').value = formState.lot.qty;
+  }
   if (formState.product?.photoUrl) {
     $('f-photo-preview').src = formState.product.photoUrl;
     $('f-photo-preview').hidden = false;
@@ -830,7 +888,7 @@ async function saveForm(e) {
   busy(true);
   try {
     let product = formState.product;
-    if (formState.mode !== 'addLot') {
+    if (formState.mode !== 'editLot') {
       const barcode = $('f-barcode').value.trim() || '';
       const existing = barcode ? state.products.find((p) => p.barcode === barcode) : null;
       product = existing
@@ -842,11 +900,14 @@ async function saveForm(e) {
       const i = state.products.findIndex((p) => p.id === product.id);
       if (i >= 0) state.products[i] = product; else state.products.push(product);
     }
-    const dup = state.lots.find((l) => l.productId === product.id && l.storeId === state.myStore.id && l.expiry === expiry);
-    if (dup) {
-      dup.qty += qty;
-      await gs('apiSaveLot', state.auth, { ...dup });
-      toast('同じ期限があったため在庫を合算しました');
+    // 1商品につき期限は1つ: この店舗に既存の在庫記録があれば上書き更新する
+    const current = formState.lot
+      || state.lots.find((l) => l.productId === product.id && l.storeId === state.myStore.id);
+    if (current) {
+      current.expiry = expiry;
+      current.qty = qty;
+      await gs('apiSaveLot', state.auth, { ...current });
+      toast('期限と在庫数を更新しました');
     } else {
       const lot = { id: uuid(), productId: product.id, storeId: state.myStore.id, expiry, qty };
       state.lots.push(lot);
@@ -1188,13 +1249,20 @@ function bindEvents() {
   $('sheet-backdrop').addEventListener('click', closeSheet);
   $('sheet-photo-input').addEventListener('change', onSheetPhotoSelected);
   $('sheet-body').addEventListener('click', (e) => {
-    const lotRow = e.target.closest('.lot-row');
+    const lotRow = e.target.closest('.lot-row, .lot-actions');
     const act = e.target.dataset.act;
     if (lotRow && act) {
       if (state.viewStoreId !== state.myStore.id) return;
       if (act === 'plus') changeLotQty(lotRow.dataset.lot, 1);
       if (act === 'minus') changeLotQty(lotRow.dataset.lot, -1);
       if (act === 'del') deleteLot(lotRow.dataset.lot);
+      if (act === 'edit') {
+        const p = state.products.find((x) => x.id === sheetProductId);
+        const lot = state.lots.find((l) => l.id === lotRow.dataset.lot);
+        closeSheet();
+        openForm('editLot', { product: p, lot: lot });
+      }
+      if (act === 'dispose') disposeLot(lotRow.dataset.lot);
       return;
     }
     if (e.target.id === 'sheet-photo-btn') {
@@ -1204,7 +1272,7 @@ function bindEvents() {
     if (e.target.id === 'sheet-add-lot') {
       const p = state.products.find((x) => x.id === sheetProductId);
       closeSheet();
-      openForm('addLot', { product: p });
+      openForm('editLot', { product: p, lot: null });
     }
     if (e.target.id === 'sheet-rename' || e.target.closest('#sheet-rename')) {
       const p = state.products.find((x) => x.id === sheetProductId);
